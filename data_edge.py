@@ -1,0 +1,296 @@
+import os
+import random
+
+import numpy
+from PIL import Image
+import torch.utils.data as data
+import torchvision.transforms as transforms
+import torch
+import torch.nn.functional as F
+import numpy as np
+import scipy.io as sio
+import cv2
+from PIL import ImageEnhance
+
+
+
+def cv_random_flip(img, label, focal,edge):
+    flip_flag = random.randint(0, 1)
+    if flip_flag == 1:
+        img = img.transpose(Image.FLIP_LEFT_RIGHT)
+        label = label.transpose(Image.FLIP_LEFT_RIGHT)
+        edge = edge.transpose(Image.FLIP_LEFT_RIGHT)
+        for i in range(focal.shape[2]):
+            focal[:,:,i] = numpy.flip(focal[:,:,i],1)
+        # img.save(rgbdirpath)
+        # label.save(gtdirpath)
+        # focal_view = focal[:, :, 0:3]
+        # # print(focal_view.shape)
+        # cv2.imwrite(focaldirpath, focal_view)
+    return img, label, focal,edge
+
+
+def randomCrop(image, label, focal,edge):
+    border = 30
+    image_width = image.size[0]
+    image_height = image.size[1]
+    crop_win_width = np.random.randint(image_width - border, image_width)
+    crop_win_height = np.random.randint(image_height - border, image_height)
+    W1 = (image_width - crop_win_width) >> 1
+    H1 = (image_height - crop_win_height) >> 1
+    W2 = (image_width + crop_win_width) >> 1
+    H2 = (image_height + crop_win_height) >> 1
+    random_region = (W1, H1, W2, H2)   #(2, 11, 253, 244) 与左边界的距离，与上边界的距离，与左边界的距离，与上边界的距离
+    # print(random_region)
+    # print(focal.shape)
+    focal_crop = focal[H1:H2, W1:W2, :]
+    image = image.crop(random_region)
+    label = label.crop(random_region)
+    edge = edge.crop(random_region)
+    # print(focal_crop.shape)
+    # print(image.size)
+    # image.save(rgbdirpath)
+    # # label.save(gtdirpath)
+    # focal_view = focal_crop[:, :, 0:3]
+    # # print(focal_view.shape)
+    # cv2.imwrite(focaldirpath, focal_view)
+    return image, label, focal_crop,edge
+
+
+def randomRotation(image, label, focal,edge):
+    mode = Image.BICUBIC
+    if random.random() > 0.8:
+        # random_angle = np.random.randint(-15, 15)
+        angle = [90,180,270]
+        random_angle = random.choice(angle)
+        if random_angle == 90:
+            m = 1
+        elif random_angle == 180:
+            m = 2
+        else:
+            m = 3
+        image = image.rotate(random_angle, mode)
+        label = label.rotate(random_angle, mode)
+        edge = edge.rotate(random_angle, mode)
+        for i in range(focal.shape[2]):
+            focal[:, :, i] = np.rot90(focal[:, :, i],m)
+        # image.save(rgbdirpath)
+        # label.save(gtdirpath)
+        # focal_view = focal[:, :, 0:3]
+        # cv2.imwrite(focaldirpath, focal_view)
+    return image, label, focal,edge
+
+
+def colorEnhance(image):
+    bright_intensity = random.randint(5, 15) / 10.0
+    image = ImageEnhance.Brightness(image).enhance(bright_intensity)
+    contrast_intensity = random.randint(5, 15) / 10.0
+    image = ImageEnhance.Contrast(image).enhance(contrast_intensity)
+    color_intensity = random.randint(0, 20) / 10.0
+    image = ImageEnhance.Color(image).enhance(color_intensity)
+    sharp_intensity = random.randint(0, 30) / 10.0
+    image = ImageEnhance.Sharpness(image).enhance(sharp_intensity)
+    return image
+
+
+
+def randomPeper(img):
+    img = np.array(img)
+    noiseNum = int(0.0015 * img.shape[0] * img.shape[1])
+    for i in range(noiseNum):
+
+        randX = random.randint(0, img.shape[0] - 1)
+
+        randY = random.randint(0, img.shape[1] - 1)
+
+        if random.randint(0, 1) == 0:
+
+            img[randX, randY] = 0
+
+        else:
+
+            img[randX, randY] = 255
+    return Image.fromarray(img)
+
+
+
+
+class SalObjDataset(data.Dataset):
+    mean_rgb = np.array([0.485, 0.456, 0.406])
+    std_rgb = np.array([0.229, 0.224, 0.225])
+    # 将mean_rgb沿X轴复制12倍
+    mean_focal = np.tile(mean_rgb, 12)
+    # 将std_rgb沿X轴复制12倍
+    std_focal = np.tile(std_rgb, 12)
+    def __init__(self, image_root, gt_root, focal_root,edge_root, trainsize):
+        self.trainsize = trainsize
+        self.images = [image_root + f for f in os.listdir(image_root) if f.endswith('.jpg')]
+        self.gts = [gt_root + f for f in os.listdir(gt_root) if f.endswith('.jpg')
+                    or f.endswith('.png')]
+        self.edges = [edge_root + f for f in os.listdir(edge_root) if f.endswith('.jpg')
+                    or f.endswith('.png')]
+        self.focals = [focal_root + f for f in os.listdir(focal_root) if f.endswith('.mat')]
+        self.images = sorted(self.images)
+        self.gts = sorted(self.gts)
+        self.focals = sorted(self.focals) # 排序
+        self.edges = sorted(self.edges)
+        self.size = len(self.images)
+        self.img_transform = transforms.Compose([
+            transforms.Resize((self.trainsize, self.trainsize)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+        self.gt_transform = transforms.Compose([
+            transforms.Resize((self.trainsize, self.trainsize)),
+            transforms.ToTensor()])
+        self.edge_transform = transforms.Compose([
+            transforms.Resize((self.trainsize, self.trainsize)),
+            transforms.ToTensor()])
+        
+    #   return image, mask
+    def __getitem__(self, index):
+        image = self.rgb_loader(self.images[index])
+        gt = self.binary_loader(self.gts[index])
+        focal = self.focal_loader(self.focals[index])
+        edge = self.binary_loader(self.edges[index])
+
+        image, gt, focal,edge = cv_random_flip(image, gt, focal,edge)
+        # image, gt, focal,edge= randomRotation(image, gt, focal,edge)
+        image, gt, focal,edge = randomCrop(image, gt, focal,edge)
+        image = colorEnhance(image)
+        gt = randomPeper(gt)
+        edge= randomPeper(edge)
+
+
+        image = self.img_transform(image) #torch.Size([3, 256, 256])
+        gt = self.gt_transform(gt) #torch.Size([1, 256, 256])
+        edge = self.edge_transform(edge)
+        focal = np.array(focal, dtype=np.int32)
+        if focal.shape[0] != 256:
+            new_focal = []
+            focal_num = focal.shape[2] // 3
+            for i in range(focal_num):
+                a = focal[:, :, i * 3:i * 3 + 3].astype(np.uint8)
+                a = cv2.resize(a, (256, 256))
+                new_focal.append(a)
+            focal = np.concatenate(new_focal, axis=2)  # (256, 256, 36)
+
+
+        # 将图片转化为numpy数组
+        focal = focal.astype(np.float64)/255.0
+        focal -= self.mean_focal
+        focal /= self.std_focal
+        focal = focal.transpose(2, 0, 1)
+        # 把数组转换成张量，且二者共享内存
+        focal = torch.from_numpy(focal).float() #torch.Size([36, 256, 256])
+
+        
+
+        return image, gt, focal,edge
+    def rgb_loader(self, path):
+        with open(path, 'rb') as f:
+            img = Image.open(f)
+            return img.convert('RGB')
+
+    def binary_loader(self, path):
+        with open(path, 'rb') as f:
+            img = Image.open(f)
+            return img.convert('L')
+    def focal_loader(self, path):
+        with open(path, 'rb') as f:
+            focal = sio.loadmat(f)
+            focal = focal['img'] #上面函数返回的一键值对，选取键为’img‘的值给focal
+            return focal
+
+    def resize(self, img, gt, focal):
+        assert img.size == gt.size
+        w, h = img.size
+        if h < self.trainsize or w < self.trainsize:
+            h = max(h, self.trainsize)
+            w = max(w, self.trainsize)
+            return img.resize((w, h), Image.BILINEAR), gt.resize((w, h), Image.NEAREST), focal
+        else:
+            return img, gt, focal
+
+    def __len__(self):
+        return self.size
+
+def get_loader(image_root, gt_root, focal_root, edge_root,batchsize, trainsize, shuffle=True, num_workers=0, pin_memory=True): #pin_memory设置为True可以将Tensor放入到内存的锁页区，加快训练速度
+
+    dataset = SalObjDataset(image_root, gt_root, focal_root, edge_root,trainsize)
+    data_loader = data.DataLoader(dataset=dataset,
+                                  batch_size=batchsize,
+                                  shuffle=shuffle,
+                                  num_workers=num_workers,
+                                  pin_memory=pin_memory)
+    return data_loader
+
+class test_dataset:
+    mean_rgb = np.array([0.485, 0.456, 0.406])
+    std_rgb = np.array([0.229, 0.224, 0.225])
+    mean_focal = np.tile(mean_rgb, 12)
+    std_focal = np.tile(std_rgb, 12)
+    def __init__(self, image_root, gt_root, focal_root, testsize):
+        self.testsize = testsize
+        self.images = [image_root + f for f in os.listdir(image_root) if f.endswith('.jpg')]
+        self.gts = [gt_root + f for f in os.listdir(gt_root) if f.endswith('.jpg')
+                       or f.endswith('.png')]
+        self.focals = [focal_root + f for f in os.listdir(focal_root) if f.endswith('.mat')]
+        self.images = sorted(self.images)
+        self.gts = sorted(self.gts)
+        self.focals = sorted(self.focals)
+        self.transform = transforms.Compose([
+            transforms.Resize((self.testsize, self.testsize)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+        self.gt_transform = transforms.ToTensor()
+        self.size = len(self.images)
+        self.index = 0
+    def load_data(self):
+        image = self.rgb_loader(self.images[self.index])
+        image = self.transform(image).unsqueeze(0)
+        gt = self.binary_loader(self.gts[self.index])
+        focal = self.focal_loader(self.focals[self.index]) #focal.shape = (256, 256, 256)
+        focal = np.array(focal, dtype=np.int32)
+        if focal.shape[0] != 256:
+            new_focal = []
+            focal_num = focal.shape[2] // 3
+            for i in range(focal_num):
+                a = focal[:, :, i * 3:i * 3 + 3].astype(np.uint8)
+                a = cv2.resize(a, (256, 256))
+                new_focal.append(a)
+            focal = np.concatenate(new_focal, axis=2)
+
+
+        focal = focal.astype(np.float64)/255.0
+        focal -= self.mean_focal
+        focal /= self.std_focal
+        focal = focal.transpose(2, 0, 1)
+        focal = torch.from_numpy(focal).float()
+
+
+        name = self.images[self.index].split('/')[-1]
+        if name.endswith('.jpg'):
+            name = name.split('.jpg')[0] + '.png'
+            
+        # print(name)
+        
+        self.index += 1
+        self.index = self.index % self.size
+        return image, focal, gt, name
+    def focal_loader(self, path):
+        with open(path, 'rb') as f:
+            focal = sio.loadmat(f)
+            focal = focal['img']
+            return focal
+
+    def rgb_loader(self, path):
+        with open(path, 'rb') as f:
+            img = Image.open(f)
+            return img.convert('RGB')
+
+    def binary_loader(self, path):
+        with open(path, 'rb') as f:
+            img = Image.open(f)
+            return img.convert('L')
+
+
