@@ -161,27 +161,18 @@ class select(nn.Module):
 
         return torch.cat(result_list, dim=0)
         
-    def select_weights(self, input_weights,focal_n):
-        batch_size, num_weights = input_weights.size()
+    def select_weights(self, weights,focal_n):
+        batch_size, num_weights = weights.shape
+        assert num_weights >= n, 
+        all_indices = torch.arange(num_weights, device=weights.device)
+        comb_indices = torch.combinations(all_indices, r=n, with_replacement=False) 
+        num_combinations = comb_indices.size(0)      
+        comb_weights = weights[:, comb_indices] 
+        variances = torch.var(comb_weights, dim=-1)  
+        max_var_indices = torch.argmax(variances, dim=-1)  
+        best_comb_indices = comb_indices[max_var_indices] 
 
-        max_variance = torch.zeros(batch_size, device=input_weights.device)
-        selected_indices = torch.zeros((batch_size, focal_n), device=input_weights.device)
-
-        for batch_idx in range(batch_size):
-            batch_weights = input_weights[batch_idx]
-
-            for i in range(num_weights):
-                for j in range(i + 1, num_weights):
-                    
-                    selected = torch.tensor([i, j], device=input_weights.device)
-                    selected_weights = torch.index_select(batch_weights, 0, selected)
-                    variance = torch.var(selected_weights)
-
-                    if variance > max_variance[batch_idx]:
-                        max_variance[batch_idx] = variance
-                        selected_indices[batch_idx] = selected
-
-        return selected_indices.to(torch.long)
+        return best_comb_indices.to(torch.long)
 
 class Refine(nn.Module):
     def __init__(self,in_channels):
