@@ -1,27 +1,22 @@
 import logging
 import os
-from datetime import datetime
 import numpy as np
 import torch.nn.functional as F
 import torch.backends.cudnn as cudnn
 import torch.optim
-from data_edge import get_loader, test_dataset
-from model.model import model
-from options.options_model import opt
+from datetime import datetime
+from torch.autograd import Variable
 from utils import clip_gradient, adjust_lr
 from tools.pytorch_utils import Save_Handle
-from torch.autograd import Variable
+
+from model.model import model
+from options.options_model import opt
+from data_edge import get_loader, test_dataset
 
 torch.cuda.current_device()
 cudnn.benchmark = True
 save_list = Save_Handle(max_num=1)
 
-def print_network(model, name):
-    num_params = 0
-    for p in model.parameters():
-        num_params += p.numel()#numel用于返回数组中的元素个数
-    print('The number of parameters:{}'.format(num_params))
-    return num_params
 start_epoch = opt.start_epoch
 
 model = model()
@@ -35,7 +30,7 @@ else:
 model.cuda()
 params = model.parameters()
 optimizer = torch.optim.AdamW(params, opt.lr, weight_decay=1e-4)  #weight_decay正则化系数
-model_params = print_network(model, 'lf_pvt')
+
 
 rgb_root = opt.rgb_root
 gt_root = opt.gt_root
@@ -56,8 +51,6 @@ test_loader = test_dataset(test_rgb_root, test_gt_root, test_fs_root,testsize=op
 total_step = len(train_loader)
 logging.basicConfig(filename=save_path + 'log.log', format='[%(asctime)s-%(filename)s-%(levelname)s:%(message)s]',
                     level=logging.INFO, filemode='a', datefmt='%Y-%m-%d %I:%M:%S %p')
-logging.info("Net-Train")
-
 logging.info(
     'epoch:{};lr:{};batchsize:{};trainsize:{};clip:{};decay_rate:{};save_path:{};decay_epoch:{}'.format(
         opt.epoch, opt.lr, opt.batchsize, opt.trainsize, opt.clip, opt.decay_rate,  save_path,
@@ -80,7 +73,6 @@ step = 0
 best_mae = 1
 best_epoch = 0
 
-
 def train(train_loader, model, optimizer, epoch, save_path):
     global step
     model.train()
@@ -91,7 +83,6 @@ def train(train_loader, model, optimizer, epoch, save_path):
             basize, dim, height, width = focal.size()
             gts = gts.cuda()
             images, gts, focal,edge = Variable(images), Variable(gts), Variable(focal),Variable(edge)
-            # focal = focal.view(ba, 12, 3, 256, 256).transpose(1, 2).contiguous().view(ba * 12, 3, 256, 256)
             focal = focal.view(1, basize, dim, height, width).transpose(0, 1)  # (basize, 1, 36, 256, 256)
             focal = torch.cat(torch.chunk(focal, chunks=12, dim=2), dim=1)  # (basize, 12, 3, 256, 256)
             focal = torch.cat(torch.chunk(focal, chunks=basize, dim=0), dim=1)  # (1, basize*12, 6, 256, 256)
@@ -108,7 +99,6 @@ def train(train_loader, model, optimizer, epoch, save_path):
             loss = structure_loss(sal_re, gts)+structure_loss(sal0, gts)+structure_loss(sal1, gts)+structure_loss(sal2, gts)+structure_loss(sal3, gts) +structure_loss(pre_edge,edge_num)+structure_loss(sal_x, gts) 
             
             loss.backward()
-            # 梯度裁剪
             clip_gradient(optimizer, opt.clip)
             optimizer.step()
             step += 1
@@ -123,13 +113,10 @@ def train(train_loader, model, optimizer, epoch, save_path):
                         format(epoch, opt.epoch, i, total_step, optimizer.state_dict()['param_groups'][0]['lr'], loss.data, memory_used))
         loss_all /= epoch_step
         logging.info('#TRAIN#:Epoch [{:03d}/{:03d}],Loss_AVG: {:.4f}'.format(epoch, opt.epoch, loss_all))
-        #----------------这里改了
 
         if (epoch) % 10 == 0:
-        # #     
             torch.save(model.state_dict(), save_path + 'epoch_{}.pth'.format(epoch))
 
-        # 训练中断保留参数
         temp_save_path = save_path + "{}_ckpt.tar".format(epoch)
         torch.save({
             'epoch': epoch,
@@ -142,7 +129,7 @@ def train(train_loader, model, optimizer, epoch, save_path):
         logging.info('Keyboard Interrupt: save model and exit.')
         if not os.path.exists(save_path):
             os.makedirs(save_path)
-        torch.save(model.state_dict(), save_path + 'lfnet_epoch_{}.pth'.format(epoch + 1))
+        torch.save(model.state_dict(), save_path + 'VMKnet_epoch_{}.pth'.format(epoch + 1))
         logging.info('save checkpoints successfully!')
         raise
 
@@ -181,21 +168,14 @@ def test(test_loader, model, epoch, save_path):
             if mae < best_mae:
                 best_mae = mae
                 best_epoch = epoch
-                torch.save(model.state_dict(), save_path + 'lfsod_epoch_best.pth')
+                torch.save(model.state_dict(), save_path + 'best.pth')
         logging.info('#TEST#:Epoch:{} MAE:{} bestEpoch:{} bestMAE:{}'.format(epoch, mae, best_epoch, best_mae))
 
 
 if __name__ == '__main__':
-    logging.info("Start train...")
-    # 初次衰减循环增大10个epoch即110后才进行第一次衰减
+
     for epoch in range(start_epoch, opt.epoch+1):
-        
         cur_lr = adjust_lr(optimizer, opt.lr, epoch, opt.decay_rate, opt.decay_epoch)
-        # writer.add_scalar('learning_rate', cur_lr, global_step=epoch)
-        # test(test_loader, model, epoch, save_path)
         train(train_loader, model, optimizer, epoch, save_path)
-        # test(test_loader, model, epoch, save_path)
-        if (epoch % 5 ==0 and epoch < 100):
-            test(test_loader, model, epoch, save_path)
-        if epoch > 100 :
-            test(test_loader, model, epoch, save_path)
+        if epoch % 5 ==0:
+             test(test_loader, model, epoch, save_path)
